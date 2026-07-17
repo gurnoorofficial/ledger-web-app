@@ -220,33 +220,17 @@ function App() {
     "Hello from my Ledger Nano X"
   );
 
-  const [timestampMode, setTimestampMode] =
-    useState("ASK");
-
   const [includeTimestampAsk, setIncludeTimestampAsk] =
     useState(false);
 
   const [signature, setSignature] = useState("");
-  const [signatureR, setSignatureR] = useState("");
-  const [signatureS, setSignatureS] = useState("");
-  const [signatureV, setSignatureV] = useState("");
-
-  const [originalSignedMessage, setOriginalSignedMessage] =
-    useState("");
-
   const [exactSignedMessage, setExactSignedMessage] =
-    useState("");
-
-  const [signedTimestamp, setSignedTimestamp] =
     useState("");
 
   const [signedDerivationPath, setSignedDerivationPath] =
     useState("");
 
   const [signingAddress, setSigningAddress] =
-    useState("");
-
-  const [recoveredAddress, setRecoveredAddress] =
     useState("");
 
   const [signatureValid, setSignatureValid] =
@@ -289,17 +273,9 @@ function App() {
 
   function clearSignatureResults() {
     setSignature("");
-    setSignatureR("");
-    setSignatureS("");
-    setSignatureV("");
-
-    setOriginalSignedMessage("");
     setExactSignedMessage("");
-    setSignedTimestamp("");
     setSignedDerivationPath("");
-
     setSigningAddress("");
-    setRecoveredAddress("");
     setSignatureValid(null);
   }
 
@@ -310,15 +286,7 @@ function App() {
       throw new Error("The message cannot be empty.");
     }
 
-    let shouldAddTimestamp = false;
-
-    if (timestampMode === "ALWAYS") {
-      shouldAddTimestamp = true;
-    }
-
-    if (timestampMode === "ASK") {
-      shouldAddTimestamp = includeTimestampAsk;
-    }
+    const shouldAddTimestamp = includeTimestampAsk;
 
     let timestamp = "";
     let fullMessage = rawMessage;
@@ -484,11 +452,8 @@ function App() {
     setBusyAction("sign-message");
 
     try {
-      const {
-        rawMessage,
-        timestamp,
-        fullMessage,
-      } = prepareMessageForSigning();
+      const { fullMessage } =
+        prepareMessageForSigning();
 
       if (usingAppKit) {
         if (!walletProvider) {
@@ -512,9 +477,6 @@ function App() {
         const walletSignature =
           await signer.signMessage(fullMessage);
 
-        const parsedSignature =
-          Signature.from(walletSignature);
-
         const recovered = verifyMessage(
           fullMessage,
           walletSignature
@@ -528,21 +490,11 @@ function App() {
         setPublicKey("");
 
         setSignature(walletSignature);
-        setSignatureR(parsedSignature.r);
-        setSignatureS(parsedSignature.s);
-        setSignatureV(
-          String(parsedSignature.v)
-        );
-
-        setOriginalSignedMessage(rawMessage);
         setExactSignedMessage(fullMessage);
-        setSignedTimestamp(timestamp);
         setSignedDerivationPath(
           "Reown AppKit connected account"
         );
-
         setSigningAddress(signerAddress);
-        setRecoveredAddress(recovered);
         setSignatureValid(isValid);
 
         setStatus(
@@ -644,19 +596,9 @@ function App() {
       );
 
       setSignature(serializedSignature);
-      setSignatureR(ethersSignature.r);
-      setSignatureS(ethersSignature.s);
-      setSignatureV(
-        String(ethersSignature.v)
-      );
-
-      setOriginalSignedMessage(rawMessage);
       setExactSignedMessage(fullMessage);
-      setSignedTimestamp(timestamp);
       setSignedDerivationPath(`m/${path}`);
-
       setSigningAddress(account.address);
-      setRecoveredAddress(recovered);
       setSignatureValid(isValid);
 
       setStatus(
@@ -896,64 +838,22 @@ function App() {
           </div>
 
           <div className="timestamp-controls">
-            <div>
-              <label
-                className="field-label"
-                htmlFor="timestamp-mode"
-              >
-                Timestamp mode
-              </label>
-
-              <select
-                id="timestamp-mode"
-                value={timestampMode}
+            <label className="timestamp-checkbox">
+              <input
+                type="checkbox"
+                checked={includeTimestampAsk}
                 onChange={(event) =>
-                  setTimestampMode(
-                    event.target.value
+                  setIncludeTimestampAsk(
+                    event.target.checked
                   )
                 }
                 disabled={isBusy}
-              >
-                <option value="ASK">ASK</option>
-                <option value="ALWAYS">
-                  ALWAYS
-                </option>
-                <option value="NEVER">
-                  NEVER
-                </option>
-              </select>
-            </div>
+              />
 
-            {timestampMode === "ASK" && (
-              <label className="timestamp-checkbox">
-                <input
-                  type="checkbox"
-                  checked={includeTimestampAsk}
-                  onChange={(event) =>
-                    setIncludeTimestampAsk(
-                      event.target.checked
-                    )
-                  }
-                  disabled={isBusy}
-                />
-
-                <span>
-                  Include a UTC timestamp in this signature
-                </span>
-              </label>
-            )}
-
-            {timestampMode === "ALWAYS" && (
-              <div className="timestamp-mode-note">
-                A UTC timestamp will automatically be added.
-              </div>
-            )}
-
-            {timestampMode === "NEVER" && (
-              <div className="timestamp-mode-note">
-                The message will be signed without a timestamp.
-              </div>
-            )}
+              <span>
+                Include a UTC timestamp in this signature
+              </span>
+            </label>
           </div>
 
           <label
@@ -1053,32 +953,6 @@ function App() {
             />
 
             <OutputField
-              label="Original message"
-              value={originalSignedMessage}
-              mono={false}
-              large
-            />
-
-            <OutputField
-              label="Timestamp added"
-              value={
-                exactSignedMessage
-                  ? signedTimestamp
-                    ? "YES"
-                    : "NO"
-                  : ""
-              }
-              mono={false}
-            />
-
-            {signedTimestamp && (
-              <OutputField
-                label="UTC timestamp"
-                value={signedTimestamp}
-              />
-            )}
-
-            <OutputField
               label="Exact message signed"
               value={exactSignedMessage}
               mono={false}
@@ -1091,31 +965,10 @@ function App() {
             />
 
             <OutputField
-              label="Recovered Ethereum address"
-              value={recoveredAddress}
-            />
-
-            <OutputField
               label="Complete signature"
               value={signature}
             />
 
-            <div className="signature-parts">
-              <OutputField
-                label="r"
-                value={signatureR}
-              />
-
-              <OutputField
-                label="s"
-                value={signatureS}
-              />
-
-              <OutputField
-                label="v"
-                value={signatureV}
-              />
-            </div>
           </div>
         </article>
       </section>
