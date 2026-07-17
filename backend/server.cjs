@@ -3,8 +3,11 @@ const cors = require("cors");
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+app.use(
+  cors({
+    origin: "https://ledger-web-app-1.onrender.com",
+  })
+);
 
 app.get("/", (req, res) => {
   res.send("Backend is running!");
