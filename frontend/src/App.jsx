@@ -1,7 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import TransportWebHID from "@ledgerhq/hw-transport-webhid";
 import Eth from "@ledgerhq/hw-app-eth";
-import { Signature, verifyMessage } from "ethers";
+import {
+  BrowserProvider,
+  Signature,
+  verifyMessage,
+} from "ethers";
 import "./App.css";
 
 const DEFAULT_PATH = "44'/60'/0'/0/0";
@@ -48,11 +52,19 @@ function getUtcTimestamp() {
   return new Date().toISOString().split(".")[0];
 }
 
-function formatLedgerError(error) {
+function formatWalletError(error) {
   const message =
     error instanceof Error ? error.message : String(error);
 
   const lowercaseMessage = message.toLowerCase();
+
+  if (
+    lowercaseMessage.includes("user rejected") ||
+    lowercaseMessage.includes("user denied") ||
+    lowercaseMessage.includes("4001")
+  ) {
+    return "The request was rejected in MetaMask.";
+  }
 
   if (
     lowercaseMessage.includes("no device selected") ||
@@ -87,7 +99,7 @@ function formatLedgerError(error) {
     lowercaseMessage.includes("webhid") ||
     lowercaseMessage.includes("navigator.hid")
   ) {
-    return "WebHID is unavailable. Use Chrome or Edge on a desktop computer.";
+    return "WebHID is unavailable. Use Chrome or Edge through localhost on a desktop computer.";
   }
 
   return message;
@@ -152,13 +164,21 @@ function OutputField({
   large = false,
 }) {
   return (
-    <div className={`output-field ${large ? "output-field-large" : ""}`}>
+    <div
+      className={`output-field ${
+        large ? "output-field-large" : ""
+      }`}
+    >
       <div className="output-header">
         <span>{label}</span>
         <CopyButton value={value} />
       </div>
 
-      <div className={mono ? "output-value mono" : "output-value"}>
+      <div
+        className={
+          mono ? "output-value mono" : "output-value"
+        }
+      >
         {value || "Not available"}
       </div>
     </div>
@@ -167,9 +187,17 @@ function OutputField({
 
 function App() {
   const webHidSupported = useMemo(
-    () => typeof navigator !== "undefined" && "hid" in navigator,
+    () =>
+      typeof navigator !== "undefined" &&
+      "hid" in navigator,
     []
   );
+
+  const [walletMode, setWalletMode] = useState("");
+  const [metamaskAddress, setMetamaskAddress] =
+    useState("");
+  const [ledgerConnected, setLedgerConnected] =
+    useState(false);
 
   const [derivationPath, setDerivationPath] =
     useState(DEFAULT_PATH);
@@ -181,7 +209,9 @@ function App() {
     "Hello from my Ledger Nano X"
   );
 
-  const [timestampMode, setTimestampMode] = useState("ASK");
+  const [timestampMode, setTimestampMode] =
+    useState("ASK");
+
   const [includeTimestampAsk, setIncludeTimestampAsk] =
     useState(false);
 
@@ -196,20 +226,92 @@ function App() {
   const [exactSignedMessage, setExactSignedMessage] =
     useState("");
 
-  const [signedTimestamp, setSignedTimestamp] = useState("");
+  const [signedTimestamp, setSignedTimestamp] =
+    useState("");
+
   const [signedDerivationPath, setSignedDerivationPath] =
     useState("");
 
-  const [signingAddress, setSigningAddress] = useState("");
-  const [recoveredAddress, setRecoveredAddress] = useState("");
+  const [signingAddress, setSigningAddress] =
+    useState("");
 
-  const [signatureValid, setSignatureValid] = useState(null);
+  const [recoveredAddress, setRecoveredAddress] =
+    useState("");
+
+  const [signatureValid, setSignatureValid] =
+    useState(null);
 
   const [status, setStatus] = useState("Ready");
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState("");
 
   const isBusy = Boolean(busyAction);
+  const metamaskConnected = Boolean(metamaskAddress);
+  const usingMetaMask =
+    walletMode === "metamask" && metamaskConnected;
+  const usingLedger =
+    walletMode === "ledger" && ledgerConnected;
+
+
+  useEffect(() => {
+    const ethereum = window.ethereum;
+
+    if (!ethereum) {
+      return undefined;
+    }
+
+    function handleAccountsChanged(accounts) {
+      if (!Array.isArray(accounts) || accounts.length === 0) {
+        setMetamaskAddress("");
+
+        if (walletMode === "metamask") {
+          setWalletMode("");
+          setAddress("");
+          setPublicKey("");
+          clearSignatureResults();
+          setStatus("MetaMask disconnected");
+        }
+
+        return;
+      }
+
+      const nextAddress = accounts[0];
+      setMetamaskAddress(nextAddress);
+
+      if (walletMode === "metamask") {
+        setAddress(nextAddress);
+        setPublicKey("");
+        clearSignatureResults();
+        setStatus("MetaMask account changed");
+      }
+    }
+
+    function handleDisconnect() {
+      setMetamaskAddress("");
+
+      if (walletMode === "metamask") {
+        setWalletMode("");
+        setAddress("");
+        setPublicKey("");
+        clearSignatureResults();
+        setStatus("MetaMask disconnected");
+      }
+    }
+
+    ethereum.on?.("accountsChanged", handleAccountsChanged);
+    ethereum.on?.("disconnect", handleDisconnect);
+
+    return () => {
+      ethereum.removeListener?.(
+        "accountsChanged",
+        handleAccountsChanged
+      );
+      ethereum.removeListener?.(
+        "disconnect",
+        handleDisconnect
+      );
+    };
+  }, [walletMode]);
 
   function clearSignatureResults() {
     setSignature("");
@@ -227,6 +329,114 @@ function App() {
     setSignatureValid(null);
   }
 
+  function prepareMessageForSigning() {
+    const rawMessage = message.trim();
+
+    if (!rawMessage) {
+      throw new Error("The message cannot be empty.");
+    }
+
+    let shouldAddTimestamp = false;
+
+    if (timestampMode === "ALWAYS") {
+      shouldAddTimestamp = true;
+    }
+
+    if (timestampMode === "ASK") {
+      shouldAddTimestamp = includeTimestampAsk;
+    }
+
+    let timestamp = "";
+    let fullMessage = rawMessage;
+
+    if (shouldAddTimestamp) {
+      timestamp = getUtcTimestamp();
+      fullMessage = `${rawMessage} ${timestamp}`;
+    }
+
+    return {
+      rawMessage,
+      timestamp,
+      fullMessage,
+    };
+  }
+
+  async function connectMetaMask() {
+    setError("");
+    setBusyAction("connect-metamask");
+    setStatus("Connecting to MetaMask...");
+
+    try {
+      if (!window.ethereum) {
+        throw new Error(
+          "MetaMask was not found in this browser."
+        );
+      }
+
+      const provider = new BrowserProvider(
+        window.ethereum
+      );
+
+      await provider.send("eth_requestAccounts", []);
+
+      const signer = await provider.getSigner();
+      const connectedAddress =
+        await signer.getAddress();
+
+      setMetamaskAddress(connectedAddress);
+      setWalletMode("metamask");
+      setLedgerConnected(false);
+      setAddress(connectedAddress);
+      setPublicKey("");
+      clearSignatureResults();
+
+      setStatus("MetaMask connected and selected");
+    } catch (walletError) {
+      setStatus("Failed");
+      setError(formatWalletError(walletError));
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+
+  async function connectLedger() {
+    setError("");
+    setBusyAction("connect-ledger");
+    setStatus("Connecting to Ledger...");
+
+    try {
+      if (!webHidSupported) {
+        throw new Error(
+          "Ledger WebHID requires desktop Chrome or Edge through localhost or HTTPS."
+        );
+      }
+
+      const path =
+        validateDerivationPath(derivationPath);
+
+      const account = await withLedger((eth) =>
+        eth.getAddress(path, false, false)
+      );
+
+      setWalletMode("ledger");
+      setLedgerConnected(true);
+      setAddress(account.address);
+      setPublicKey(
+        ensureHexPrefix(account.publicKey)
+      );
+      clearSignatureResults();
+
+      setStatus("Ledger connected and selected");
+    } catch (walletError) {
+      setLedgerConnected(false);
+      setStatus("Failed");
+      setError(formatWalletError(walletError));
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   async function getAccount(showOnDevice) {
     setError("");
 
@@ -234,36 +444,78 @@ function App() {
       showOnDevice ? "verify-address" : "get-address"
     );
 
-    setStatus(
-      showOnDevice
-        ? "Waiting for address confirmation on Ledger..."
-        : "Connecting to Ledger..."
-    );
-
     try {
-      if (!webHidSupported) {
+      if (usingMetaMask && !showOnDevice) {
+        setStatus(
+          "Reading Ethereum address from MetaMask..."
+        );
+
+        const provider = new BrowserProvider(
+          window.ethereum
+        );
+
+        const signer = await provider.getSigner();
+        const accountAddress =
+          await signer.getAddress();
+
+        setMetamaskAddress(accountAddress);
+        setAddress(accountAddress);
+
+        // MetaMask does not expose the account public key
+        // through eth_requestAccounts/getSigner.
+        setPublicKey("");
+
+        setStatus(
+          "MetaMask Ethereum address received"
+        );
+
+        return;
+      }
+
+      if (!usingLedger) {
         throw new Error(
-          "WebHID is not supported. Use Chrome or Edge on a desktop computer."
+          "Choose and connect MetaMask or Ledger first."
         );
       }
 
-      const path = validateDerivationPath(derivationPath);
+      if (!usingLedger) {
+        throw new Error(
+          "Choose and connect MetaMask or Ledger first."
+        );
+      }
+
+      if (!webHidSupported) {
+        throw new Error(
+          "WebHID is not supported. Use Chrome or Edge through localhost on a desktop computer."
+        );
+      }
+
+      setStatus(
+        showOnDevice
+          ? "Waiting for address confirmation on Ledger..."
+          : "Connecting to Ledger..."
+      );
+
+      const path =
+        validateDerivationPath(derivationPath);
 
       const account = await withLedger((eth) =>
         eth.getAddress(path, showOnDevice, false)
       );
 
       setAddress(account.address);
-      setPublicKey(ensureHexPrefix(account.publicKey));
+      setPublicKey(
+        ensureHexPrefix(account.publicKey)
+      );
 
       setStatus(
         showOnDevice
           ? "Address verified on Ledger"
           : "Address and public key received"
       );
-    } catch (ledgerError) {
+    } catch (walletError) {
       setStatus("Failed");
-      setError(formatLedgerError(ledgerError));
+      setError(formatWalletError(walletError));
     } finally {
       setBusyAction("");
     }
@@ -274,39 +526,85 @@ function App() {
     clearSignatureResults();
 
     setBusyAction("sign-message");
-    setStatus("Preparing message for Ledger...");
 
     try {
+      const {
+        rawMessage,
+        timestamp,
+        fullMessage,
+      } = prepareMessageForSigning();
+
+      if (usingMetaMask) {
+        setStatus(
+          "Waiting for MetaMask signature approval..."
+        );
+
+        const provider = new BrowserProvider(
+          window.ethereum
+        );
+
+        const signer = await provider.getSigner();
+        const signerAddress =
+          await signer.getAddress();
+
+        const metamaskSignature =
+          await signer.signMessage(fullMessage);
+
+        const parsedSignature =
+          Signature.from(metamaskSignature);
+
+        const recovered = verifyMessage(
+          fullMessage,
+          metamaskSignature
+        );
+
+        const isValid =
+          recovered.toLowerCase() ===
+          signerAddress.toLowerCase();
+
+        setMetamaskAddress(signerAddress);
+        setAddress(signerAddress);
+        setPublicKey("");
+
+        setSignature(metamaskSignature);
+        setSignatureR(parsedSignature.r);
+        setSignatureS(parsedSignature.s);
+        setSignatureV(
+          String(parsedSignature.v)
+        );
+
+        setOriginalSignedMessage(rawMessage);
+        setExactSignedMessage(fullMessage);
+        setSignedTimestamp(timestamp);
+        setSignedDerivationPath(
+          "MetaMask connected account"
+        );
+
+        setSigningAddress(signerAddress);
+        setRecoveredAddress(recovered);
+        setSignatureValid(isValid);
+
+        setStatus(
+          isValid
+            ? "MetaMask message signed and verified successfully"
+            : "MetaMask signature created, but verification failed"
+        );
+
+        return;
+      }
+
       if (!webHidSupported) {
         throw new Error(
-          "WebHID is not supported. Use Chrome or Edge on a desktop computer."
+          "WebHID is not supported. Use Chrome or Edge through localhost on a desktop computer."
         );
       }
 
-      const path = validateDerivationPath(derivationPath);
-      const rawMessage = message.trim();
+      setStatus(
+        "Preparing message for Ledger..."
+      );
 
-      if (!rawMessage) {
-        throw new Error("The message cannot be empty.");
-      }
-
-      let shouldAddTimestamp = false;
-
-      if (timestampMode === "ALWAYS") {
-        shouldAddTimestamp = true;
-      }
-
-      if (timestampMode === "ASK") {
-        shouldAddTimestamp = includeTimestampAsk;
-      }
-
-      let timestamp = "";
-      let fullMessage = rawMessage;
-
-      if (shouldAddTimestamp) {
-        timestamp = getUtcTimestamp();
-        fullMessage = `${rawMessage} ${timestamp}`;
-      }
+      const path =
+        validateDerivationPath(derivationPath);
 
       const messageHex = utf8ToHex(fullMessage);
 
@@ -314,31 +612,40 @@ function App() {
         "Connect Ledger and confirm the Ethereum address..."
       );
 
-      const signingResult = await withLedger(async (eth) => {
-        const account = await eth.getAddress(
-          path,
-          true,
-          false
-        );
+      const signingResult = await withLedger(
+        async (eth) => {
+          const account = await eth.getAddress(
+            path,
+            true,
+            false
+          );
 
-        setStatus(
-          "Address confirmed. Review and approve the message on Ledger..."
-        );
+          setStatus(
+            "Address confirmed. Review and approve the message on Ledger..."
+          );
 
-        const ledgerSignature =
-          await eth.signPersonalMessage(path, messageHex);
+          const ledgerSignature =
+            await eth.signPersonalMessage(
+              path,
+              messageHex
+            );
 
-        return {
-          account,
-          ledgerSignature,
-        };
-      });
+          return {
+            account,
+            ledgerSignature,
+          };
+        }
+      );
 
-      const { account, ledgerSignature } = signingResult;
+      const { account, ledgerSignature } =
+        signingResult;
 
       const numericV =
         typeof ledgerSignature.v === "string"
-          ? Number.parseInt(ledgerSignature.v, 16)
+          ? Number.parseInt(
+              ledgerSignature.v,
+              16
+            )
           : Number(ledgerSignature.v);
 
       if (!Number.isFinite(numericV)) {
@@ -371,12 +678,16 @@ function App() {
         account.address.toLowerCase();
 
       setAddress(account.address);
-      setPublicKey(ensureHexPrefix(account.publicKey));
+      setPublicKey(
+        ensureHexPrefix(account.publicKey)
+      );
 
       setSignature(serializedSignature);
       setSignatureR(ethersSignature.r);
       setSignatureS(ethersSignature.s);
-      setSignatureV(String(ethersSignature.v));
+      setSignatureV(
+        String(ethersSignature.v)
+      );
 
       setOriginalSignedMessage(rawMessage);
       setExactSignedMessage(fullMessage);
@@ -389,12 +700,12 @@ function App() {
 
       setStatus(
         isValid
-          ? "Message signed and verified successfully"
-          : "Signature created, but verification failed"
+          ? "Ledger message signed and verified successfully"
+          : "Ledger signature created, but verification failed"
       );
-    } catch (ledgerError) {
+    } catch (walletError) {
       setStatus("Failed");
-      setError(formatLedgerError(ledgerError));
+      setError(formatWalletError(walletError));
     } finally {
       setBusyAction("");
     }
@@ -403,7 +714,6 @@ function App() {
   function clearResults() {
     setAddress("");
     setPublicKey("");
-
     clearSignatureResults();
 
     setStatus("Ready");
@@ -421,27 +731,69 @@ function App() {
 
           <div>
             <div className="eyebrow">
-              Ledger WebHID Toolkit
+              Ledger and MetaMask Toolkit
             </div>
 
-            <h1>Ethereum Ledger Toolkit</h1>
+            <h1>Ethereum Wallet Toolkit</h1>
           </div>
         </div>
 
         <p className="hero-description">
           Read Ethereum accounts and sign personal messages
-          directly with your Ledger Nano X.
+          using either MetaMask or your Ledger Nano X.
         </p>
+
+        <div className="button-row">
+          <button
+            className="primary-button"
+            type="button"
+            onClick={connectMetaMask}
+            disabled={isBusy}
+          >
+            {busyAction === "connect-metamask"
+              ? "Connecting..."
+              : usingMetaMask
+                ? "MetaMask Selected"
+                : metamaskConnected
+                  ? "Use MetaMask"
+                  : "Connect MetaMask"}
+          </button>
+
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={connectLedger}
+            disabled={isBusy || !webHidSupported}
+          >
+            {busyAction === "connect-ledger"
+              ? "Connecting..."
+              : usingLedger
+                ? "Ledger Selected"
+                : "Connect Ledger"}
+          </button>
+        </div>
+
+        {usingMetaMask && (
+          <p style={{ marginTop: "10px" }}>
+            {metamaskAddress}
+          </p>
+        )}
 
         <div className="security-strip">
           <span className="security-dot" />
-          Private keys remain inside your Ledger device
+
+          {usingMetaMask
+            ? "Active wallet: MetaMask"
+            : usingLedger
+              ? "Active wallet: Ledger"
+              : "Choose MetaMask or Ledger"}
         </div>
       </section>
 
       {!webHidSupported && (
         <div className="alert alert-error">
-          WebHID is unavailable. Open this website in Chrome or
+          WebHID is unavailable for Ledger. Connect MetaMask,
+          or open this website through localhost in Chrome or
           Edge on a desktop computer.
         </div>
       )}
@@ -449,7 +801,7 @@ function App() {
       <section className="status-card">
         <div>
           <span className="status-label">
-            Device status
+            Wallet status
           </span>
 
           <strong>{status}</strong>
@@ -481,8 +833,8 @@ function App() {
               <h2>Ethereum account</h2>
 
               <p>
-                Read an address and public key using any valid
-                Ethereum derivation path.
+                Read the connected MetaMask address or read an
+                address and public key from Ledger.
               </p>
             </div>
           </div>
@@ -491,7 +843,7 @@ function App() {
             className="field-label"
             htmlFor="derivation-path"
           >
-            Derivation path
+            Ledger derivation path
           </label>
 
           <div className="path-input">
@@ -502,7 +854,9 @@ function App() {
               type="text"
               value={derivationPath}
               onChange={(event) =>
-                setDerivationPath(event.target.value)
+                setDerivationPath(
+                  event.target.value
+                )
               }
               placeholder="44'/60'/0'/0/0"
               spellCheck="false"
@@ -512,7 +866,7 @@ function App() {
           </div>
 
           <p className="field-help">
-            Standard Ethereum account:
+            Used only for Ledger:
             {" "}
             m/44&apos;/60&apos;/0&apos;/0/0
           </p>
@@ -522,18 +876,25 @@ function App() {
               className="primary-button"
               type="button"
               onClick={() => getAccount(false)}
-              disabled={isBusy || !webHidSupported}
+              disabled={
+                isBusy ||
+                (!usingMetaMask && !usingLedger)
+              }
             >
               {busyAction === "get-address"
                 ? "Connecting..."
-                : "Get address & public key"}
+                : usingMetaMask
+                  ? "Get MetaMask address"
+                  : "Get address & public key"}
             </button>
 
             <button
               className="secondary-button"
               type="button"
               onClick={() => getAccount(true)}
-              disabled={isBusy || !webHidSupported}
+              disabled={
+                isBusy || !usingLedger || !webHidSupported
+              }
             >
               {busyAction === "verify-address"
                 ? "Waiting..."
@@ -548,7 +909,11 @@ function App() {
             />
 
             <OutputField
-              label="Public key"
+              label={
+                usingMetaMask
+                  ? "Public key (not exposed by MetaMask)"
+                  : "Public key"
+              }
               value={publicKey}
             />
           </div>
@@ -562,9 +927,9 @@ function App() {
               <h2>Sign personal message</h2>
 
               <p>
-                Sign exact UTF-8 text using the selected
-                derivation path and verify the recovered
-                Ethereum address.
+                Sign exact UTF-8 text using MetaMask or the
+                selected Ledger derivation path, then verify
+                the recovered Ethereum address.
               </p>
             </div>
           </div>
@@ -582,13 +947,19 @@ function App() {
                 id="timestamp-mode"
                 value={timestampMode}
                 onChange={(event) =>
-                  setTimestampMode(event.target.value)
+                  setTimestampMode(
+                    event.target.value
+                  )
                 }
                 disabled={isBusy}
               >
                 <option value="ASK">ASK</option>
-                <option value="ALWAYS">ALWAYS</option>
-                <option value="NEVER">NEVER</option>
+                <option value="ALWAYS">
+                  ALWAYS
+                </option>
+                <option value="NEVER">
+                  NEVER
+                </option>
               </select>
             </div>
 
@@ -644,7 +1015,8 @@ function App() {
 
           <div className="textarea-footer">
             <span>
-              Review the exact message on your Ledger.
+              Review the exact message in MetaMask or on your
+              Ledger.
             </span>
 
             <span>{message.length} / 4096</span>
@@ -657,12 +1029,16 @@ function App() {
             disabled={
               isBusy ||
               !message.trim().length ||
-              !webHidSupported
+              (!usingMetaMask && !usingLedger)
             }
           >
             {busyAction === "sign-message"
-              ? "Waiting for Ledger approval..."
-              : "Sign message with Ledger"}
+              ? "Waiting for approval..."
+              : usingMetaMask
+                ? "Sign message with MetaMask"
+                : usingLedger
+                  ? "Sign message with Ledger"
+                  : "Connect a wallet first"}
           </button>
 
           <div className="warning-box">
@@ -693,7 +1069,7 @@ function App() {
 
               {signatureValid === true && (
                 <p>
-                  The recovered address matches the Ledger
+                  The recovered address matches the signing
                   Ethereum address.
                 </p>
               )}
@@ -701,13 +1077,17 @@ function App() {
               {signatureValid === false && (
                 <p>
                   The recovered address does not match the
-                  Ledger Ethereum address.
+                  signing Ethereum address.
                 </p>
               )}
             </div>
 
             <OutputField
-              label="Derivation path used"
+              label={
+                metamaskConnected
+                  ? "Wallet used"
+                  : "Derivation path used"
+              }
               value={signedDerivationPath}
             />
 
@@ -745,7 +1125,7 @@ function App() {
             />
 
             <OutputField
-              label="Ledger Ethereum address"
+              label="Signing Ethereum address"
               value={signingAddress}
             />
 
@@ -781,11 +1161,12 @@ function App() {
 
       <section className="device-instructions">
         <div>
-          <h3>Before connecting</h3>
+          <h3>Wallet selection</h3>
 
           <p>
-            Close Ledger Live and MetaMask, connect and unlock
-            your Ledger Nano X, then open the Ethereum app.
+            When MetaMask is connected, the account and
+            signing buttons use MetaMask. Without MetaMask,
+            they use Ledger through WebHID.
           </p>
         </div>
 
