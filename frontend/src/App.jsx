@@ -11,7 +11,9 @@ function App() {
       setLoading(true);
       setError("");
 
-      const response = await fetch("http://localhost:3000/api/hello");
+      const response = await fetch(
+  "https://ledger-web-app-r9xb.onrender.com/api/hello"
+);
 
       if (!response.ok) {
         throw new Error(`Backend returned ${response.status}`);
