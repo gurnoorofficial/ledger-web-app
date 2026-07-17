@@ -1,46 +1,72 @@
 import { useState } from "react";
-import "./App.css";
+import TransportWebHID from "@ledgerhq/hw-transport-webhid";
+import Eth from "@ledgerhq/hw-app-eth";
 
-function App() {
-  const [message, setMessage] = useState("");
-  const [loading, setLoading] = useState(false);
+const DERIVATION_PATH = "44'/60'/0'/0/0";
+
+export default function App() {
+  const [status, setStatus] = useState("Ready");
+  const [address, setAddress] = useState("");
   const [error, setError] = useState("");
 
-  async function contactBackend() {
+  async function connectLedger() {
+    let transport;
+
     try {
-      setLoading(true);
+      setStatus("Connecting...");
       setError("");
+      setAddress("");
 
-  const response = await fetch(
-  `${import.meta.env.VITE_API_URL}/api/hello`
-);
-
-      if (!response.ok) {
-        throw new Error(`Backend returned ${response.status}`);
+      if (!("hid" in navigator)) {
+        throw new Error("WebHID is not supported in this browser.");
       }
 
-      const data = await response.json();
-      setMessage(data.message);
+      transport = await TransportWebHID.create();
+
+      const eth = new Eth(transport);
+
+      const result = await eth.getAddress(
+        DERIVATION_PATH,
+        true,
+        false
+      );
+
+      setAddress(result.address);
+      setStatus("Address received");
     } catch (err) {
-      setError(err.message);
+      console.error(err);
+      setStatus("Failed");
+      setError(err?.message || String(err));
     } finally {
-      setLoading(false);
+      if (transport) {
+        await transport.close().catch(console.error);
+      }
     }
   }
 
   return (
-    <main className="container">
-      <h1>Ledger Web App</h1>
-      <p>React frontend with Node.js backend</p>
+    <div style={{ padding: "40px", fontFamily: "Arial" }}>
+      <h1>Ledger Ethereum Address</h1>
 
-      <button onClick={contactBackend} disabled={loading}>
-        {loading ? "Connecting..." : "Contact Backend"}
+      <p>Unlock Ledger and open the Ethereum app.</p>
+
+      <button onClick={connectLedger}>
+        Connect Ledger
       </button>
 
-      {message && <p className="success">{message}</p>}
-      {error && <p className="error">Error: {error}</p>}
-    </main>
+      <p>Status: {status}</p>
+
+      {address && (
+        <p>
+          Address: <code>{address}</code>
+        </p>
+      )}
+
+      {error && (
+        <pre style={{ whiteSpace: "pre-wrap" }}>
+          Error: {error}
+        </pre>
+      )}
+    </div>
   );
 }
-
-export default App;
