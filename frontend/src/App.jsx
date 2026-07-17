@@ -11,8 +11,8 @@ function App() {
       setLoading(true);
       setError("");
 
-      const response = await fetch(
-  "https://ledger-web-app-r9xb.onrender.com/api/hello"
+  const response = await fetch(
+  `${import.meta.env.VITE_API_URL}/api/hello`
 );
 
       if (!response.ok) {
