@@ -4,15 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-      "dev": "vite --host 0.0.0.0 --port 8080",
+    "dev": "vite --host 0.0.0.0 --port 8080",
     "build": "vite build",
-    
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
     "@ledgerhq/hw-app-eth": "^7.8.9",
     "@ledgerhq/hw-transport-webhid": "^6.36.0",
+    "@reown/appkit": "^1.8.22",
+    "@reown/appkit-adapter-ethers": "^1.8.22",
     "buffer": "^6.0.3",
     "ethers": "^6.17.0",
     "react": "^19.2.7",

@@ -2,6 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import TransportWebHID from "@ledgerhq/hw-transport-webhid";
 import Eth from "@ledgerhq/hw-app-eth";
 import {
+  useAppKit,
+  useAppKitAccount,
+  useAppKitProvider,
+} from "@reown/appkit/react";
+import {
   BrowserProvider,
   Signature,
   verifyMessage,
@@ -63,7 +68,7 @@ function formatWalletError(error) {
     lowercaseMessage.includes("user denied") ||
     lowercaseMessage.includes("4001")
   ) {
-    return "The request was rejected in MetaMask.";
+    return "The request was rejected in the wallet.";
   }
 
   if (
@@ -75,7 +80,7 @@ function formatWalletError(error) {
 
   if (lowercaseMessage.includes("already open")) {
     return (
-      "Ledger is already being used. Close Ledger Live, MetaMask, " +
+      "Ledger is already being used. Close Ledger Live, wallet apps, " +
       "other browser tabs, and previous Ledger scripts."
     );
   }
@@ -193,9 +198,15 @@ function App() {
     []
   );
 
+  const { open } = useAppKit();
+  const {
+    address: appKitAddress,
+    isConnected: appKitConnected,
+  } = useAppKitAccount({ namespace: "eip155" });
+  const { walletProvider } =
+    useAppKitProvider("eip155");
+
   const [walletMode, setWalletMode] = useState("");
-  const [metamaskAddress, setMetamaskAddress] =
-    useState("");
   const [ledgerConnected, setLedgerConnected] =
     useState(false);
 
@@ -246,72 +257,35 @@ function App() {
   const [busyAction, setBusyAction] = useState("");
 
   const isBusy = Boolean(busyAction);
-  const metamaskConnected = Boolean(metamaskAddress);
-  const usingMetaMask =
-    walletMode === "metamask" && metamaskConnected;
+  const walletConnected =
+    Boolean(appKitConnected && appKitAddress);
+  const usingAppKit =
+    walletMode === "appkit" && walletConnected;
   const usingLedger =
     walletMode === "ledger" && ledgerConnected;
 
 
   useEffect(() => {
-    const ethereum = window.ethereum;
-
-    if (!ethereum) {
-      return undefined;
-    }
-
-    function handleAccountsChanged(accounts) {
-      if (!Array.isArray(accounts) || accounts.length === 0) {
-        setMetamaskAddress("");
-
-        if (walletMode === "metamask") {
-          setWalletMode("");
-          setAddress("");
-          setPublicKey("");
-          clearSignatureResults();
-          setStatus("MetaMask disconnected");
-        }
-
-        return;
-      }
-
-      const nextAddress = accounts[0];
-      setMetamaskAddress(nextAddress);
-
-      if (walletMode === "metamask") {
-        setAddress(nextAddress);
+    if (appKitConnected && appKitAddress) {
+      if (walletMode !== "ledger") {
+        setWalletMode("appkit");
+        setLedgerConnected(false);
+        setAddress(appKitAddress);
         setPublicKey("");
-        clearSignatureResults();
-        setStatus("MetaMask account changed");
+        setStatus("Wallet connected through Reown AppKit");
       }
+
+      return;
     }
 
-    function handleDisconnect() {
-      setMetamaskAddress("");
-
-      if (walletMode === "metamask") {
-        setWalletMode("");
-        setAddress("");
-        setPublicKey("");
-        clearSignatureResults();
-        setStatus("MetaMask disconnected");
-      }
+    if (walletMode === "appkit") {
+      setWalletMode("");
+      setAddress("");
+      setPublicKey("");
+      clearSignatureResults();
+      setStatus("Wallet disconnected");
     }
-
-    ethereum.on?.("accountsChanged", handleAccountsChanged);
-    ethereum.on?.("disconnect", handleDisconnect);
-
-    return () => {
-      ethereum.removeListener?.(
-        "accountsChanged",
-        handleAccountsChanged
-      );
-      ethereum.removeListener?.(
-        "disconnect",
-        handleDisconnect
-      );
-    };
-  }, [walletMode]);
+  }, [appKitAddress, appKitConnected, walletMode]);
 
   function clearSignatureResults() {
     setSignature("");
@@ -361,36 +335,19 @@ function App() {
     };
   }
 
-  async function connectMetaMask() {
+  async function connectWallet() {
     setError("");
-    setBusyAction("connect-metamask");
-    setStatus("Connecting to MetaMask...");
+    setBusyAction("connect-wallet");
+    setStatus("Opening wallet connection...");
 
     try {
-      if (!window.ethereum) {
-        throw new Error(
-          "MetaMask was not found in this browser."
-        );
-      }
+      await open();
 
-      const provider = new BrowserProvider(
-        window.ethereum
+      setStatus(
+        appKitConnected
+          ? "Wallet connected through Reown AppKit"
+          : "Select a wallet in the connection window"
       );
-
-      await provider.send("eth_requestAccounts", []);
-
-      const signer = await provider.getSigner();
-      const connectedAddress =
-        await signer.getAddress();
-
-      setMetamaskAddress(connectedAddress);
-      setWalletMode("metamask");
-      setLedgerConnected(false);
-      setAddress(connectedAddress);
-      setPublicKey("");
-      clearSignatureResults();
-
-      setStatus("MetaMask connected and selected");
     } catch (walletError) {
       setStatus("Failed");
       setError(formatWalletError(walletError));
@@ -445,28 +402,33 @@ function App() {
     );
 
     try {
-      if (usingMetaMask && !showOnDevice) {
+      if (usingAppKit && !showOnDevice) {
+        if (!walletProvider) {
+          throw new Error(
+            "The connected wallet provider is unavailable. Reconnect the wallet."
+          );
+        }
+
         setStatus(
-          "Reading Ethereum address from MetaMask..."
+          "Reading Ethereum address from the connected wallet..."
         );
 
         const provider = new BrowserProvider(
-          window.ethereum
+          walletProvider
         );
 
         const signer = await provider.getSigner();
         const accountAddress =
           await signer.getAddress();
 
-        setMetamaskAddress(accountAddress);
         setAddress(accountAddress);
 
-        // MetaMask does not expose the account public key
-        // through eth_requestAccounts/getSigner.
+        // Standard browser wallets do not expose the account
+        // public key through eth_requestAccounts/getSigner.
         setPublicKey("");
 
         setStatus(
-          "MetaMask Ethereum address received"
+          "Connected wallet Ethereum address received"
         );
 
         return;
@@ -474,13 +436,7 @@ function App() {
 
       if (!usingLedger) {
         throw new Error(
-          "Choose and connect MetaMask or Ledger first."
-        );
-      }
-
-      if (!usingLedger) {
-        throw new Error(
-          "Choose and connect MetaMask or Ledger first."
+          "Choose and connect a wallet or Ledger first."
         );
       }
 
@@ -534,39 +490,44 @@ function App() {
         fullMessage,
       } = prepareMessageForSigning();
 
-      if (usingMetaMask) {
+      if (usingAppKit) {
+        if (!walletProvider) {
+          throw new Error(
+            "The connected wallet provider is unavailable. Reconnect the wallet."
+          );
+        }
+
         setStatus(
-          "Waiting for MetaMask signature approval..."
+          "Waiting for wallet signature approval..."
         );
 
         const provider = new BrowserProvider(
-          window.ethereum
+          walletProvider
         );
 
         const signer = await provider.getSigner();
         const signerAddress =
           await signer.getAddress();
 
-        const metamaskSignature =
+        const walletSignature =
           await signer.signMessage(fullMessage);
 
         const parsedSignature =
-          Signature.from(metamaskSignature);
+          Signature.from(walletSignature);
 
         const recovered = verifyMessage(
           fullMessage,
-          metamaskSignature
+          walletSignature
         );
 
         const isValid =
           recovered.toLowerCase() ===
           signerAddress.toLowerCase();
 
-        setMetamaskAddress(signerAddress);
         setAddress(signerAddress);
         setPublicKey("");
 
-        setSignature(metamaskSignature);
+        setSignature(walletSignature);
         setSignatureR(parsedSignature.r);
         setSignatureS(parsedSignature.s);
         setSignatureV(
@@ -577,7 +538,7 @@ function App() {
         setExactSignedMessage(fullMessage);
         setSignedTimestamp(timestamp);
         setSignedDerivationPath(
-          "MetaMask connected account"
+          "Reown AppKit connected account"
         );
 
         setSigningAddress(signerAddress);
@@ -586,8 +547,8 @@ function App() {
 
         setStatus(
           isValid
-            ? "MetaMask message signed and verified successfully"
-            : "MetaMask signature created, but verification failed"
+            ? "Wallet message signed and verified successfully"
+            : "Wallet signature created, but verification failed"
         );
 
         return;
@@ -731,7 +692,7 @@ function App() {
 
           <div>
             <div className="eyebrow">
-              Ledger and MetaMask Toolkit
+              Ledger and WalletConnect Toolkit
             </div>
 
             <h1>Ethereum Wallet Toolkit</h1>
@@ -740,23 +701,23 @@ function App() {
 
         <p className="hero-description">
           Read Ethereum accounts and sign personal messages
-          using either MetaMask or your Ledger Nano X.
+          using Reown AppKit wallets or your Ledger Nano X.
         </p>
 
         <div className="button-row">
           <button
             className="primary-button"
             type="button"
-            onClick={connectMetaMask}
+            onClick={connectWallet}
             disabled={isBusy}
           >
-            {busyAction === "connect-metamask"
+            {busyAction === "connect-wallet"
               ? "Connecting..."
-              : usingMetaMask
-                ? "MetaMask Selected"
-                : metamaskConnected
-                  ? "Use MetaMask"
-                  : "Connect MetaMask"}
+              : usingAppKit
+                ? "Wallet Selected"
+                : walletConnected
+                  ? "Manage Wallet"
+                  : "Connect Wallet"}
           </button>
 
           <button
@@ -773,26 +734,26 @@ function App() {
           </button>
         </div>
 
-        {usingMetaMask && (
+        {usingAppKit && (
           <p style={{ marginTop: "10px" }}>
-            {metamaskAddress}
+            {appKitAddress}
           </p>
         )}
 
         <div className="security-strip">
           <span className="security-dot" />
 
-          {usingMetaMask
-            ? "Active wallet: MetaMask"
+          {usingAppKit
+            ? "Active wallet: Reown AppKit"
             : usingLedger
               ? "Active wallet: Ledger"
-              : "Choose MetaMask or Ledger"}
+              : "Choose a wallet or Ledger"}
         </div>
       </section>
 
       {!webHidSupported && (
         <div className="alert alert-error">
-          WebHID is unavailable for Ledger. Connect MetaMask,
+          WebHID is unavailable for Ledger. Connect a wallet,
           or open this website through localhost in Chrome or
           Edge on a desktop computer.
         </div>
@@ -833,7 +794,7 @@ function App() {
               <h2>Ethereum account</h2>
 
               <p>
-                Read the connected MetaMask address or read an
+                Read the connected wallet address or read an
                 address and public key from Ledger.
               </p>
             </div>
@@ -878,13 +839,13 @@ function App() {
               onClick={() => getAccount(false)}
               disabled={
                 isBusy ||
-                (!usingMetaMask && !usingLedger)
+                (!usingAppKit && !usingLedger)
               }
             >
               {busyAction === "get-address"
                 ? "Connecting..."
-                : usingMetaMask
-                  ? "Get MetaMask address"
+                : usingAppKit
+                  ? "Get wallet address"
                   : "Get address & public key"}
             </button>
 
@@ -910,8 +871,8 @@ function App() {
 
             <OutputField
               label={
-                usingMetaMask
-                  ? "Public key (not exposed by MetaMask)"
+                usingAppKit
+                  ? "Public key (not exposed by browser wallets)"
                   : "Public key"
               }
               value={publicKey}
@@ -927,7 +888,7 @@ function App() {
               <h2>Sign personal message</h2>
 
               <p>
-                Sign exact UTF-8 text using MetaMask or the
+                Sign exact UTF-8 text using a connected wallet or the
                 selected Ledger derivation path, then verify
                 the recovered Ethereum address.
               </p>
@@ -1015,7 +976,7 @@ function App() {
 
           <div className="textarea-footer">
             <span>
-              Review the exact message in MetaMask or on your
+              Review the exact message in your wallet or on your
               Ledger.
             </span>
 
@@ -1029,13 +990,13 @@ function App() {
             disabled={
               isBusy ||
               !message.trim().length ||
-              (!usingMetaMask && !usingLedger)
+              (!usingAppKit && !usingLedger)
             }
           >
             {busyAction === "sign-message"
               ? "Waiting for approval..."
-              : usingMetaMask
-                ? "Sign message with MetaMask"
+              : usingAppKit
+                ? "Sign message with wallet"
                 : usingLedger
                   ? "Sign message with Ledger"
                   : "Connect a wallet first"}
@@ -1084,7 +1045,7 @@ function App() {
 
             <OutputField
               label={
-                metamaskConnected
+                walletConnected
                   ? "Wallet used"
                   : "Derivation path used"
               }
@@ -1164,9 +1125,7 @@ function App() {
           <h3>Wallet selection</h3>
 
           <p>
-            When MetaMask is connected, the account and
-            signing buttons use MetaMask. Without MetaMask,
-            they use Ledger through WebHID.
+            When a wallet is connected through Reown AppKit, the account and signing buttons use that wallet. Ledger remains available separately through desktop WebHID.
           </p>
         </div>
 
